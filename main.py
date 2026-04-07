@@ -11,12 +11,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from datetime import datetime
 import config
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-sheet_lock = threading.Lock()
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -36,7 +32,6 @@ def get_driver():
     chrome_options.add_argument('--disable-extensions')
     chrome_options.add_argument('--window-size=1920,1080')
     chrome_options.add_argument('--remote-debugging-port=9222')
-    chrome_options.add_argument('--max_old_space_size=512')
     chrome_options.add_argument(f'--user-agent={random.choice(USER_AGENTS)}')
     chrome_options.binary_location = '/usr/bin/chromium'
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
@@ -217,7 +212,7 @@ def parse_single_link(url, max_retries=2):
 
 def update_google_sheet():
     logging.info("=" * 50)
-    logging.info("Запуск обновления таблицы (2 потока)...")
+    logging.info("Запуск обновления таблицы (последовательно)...")
     try:
         ss = ezsheets.Spreadsheet(config.SHEET_ID)
         sheet = ss[0]
@@ -240,40 +235,23 @@ def update_google_sheet():
             logging.info("Нет ссылок для парсинга")
             return
         
-        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Парсинг в 2 потока...")
-        
-        results = {}
-        
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            future_to_row = {}
-            for row_idx, url in links_to_parse:
-                future = executor.submit(parse_single_link, url)
-                future_to_row[future] = (row_idx, url)
-                time.sleep(1)  # Задержка между запусками
-            
-            for future in as_completed(future_to_row):
-                row_idx, url = future_to_row[future]
-                try:
-                    result = future.result(timeout=90)
-                    if result:
-                        results[row_idx] = result
-                except Exception as e:
-                    logging.error(f"Ошибка при парсинге {url}: {e}")
+        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Последовательный парсинг...")
         
         updated_count = 0
-        for row_idx, data in results.items():
+        for row_idx, url in links_to_parse:
             try:
-                with sheet_lock:
+                result = parse_single_link(url)
+                if result:
                     current_row = sheet.getRow(row_idx)
                     
                     while len(current_row) < 20:
                         current_row.append('')
                     
-                    current_row[2] = data['clicks']
-                    current_row[3] = data['fans']
-                    current_row[12] = data['spenders']
-                    current_row[15] = data['income']
-                    current_row[17] = data['source']
+                    current_row[2] = result['clicks']
+                    current_row[3] = result['fans']
+                    current_row[12] = result['spenders']
+                    current_row[15] = result['income']
+                    current_row[17] = result['source']
                     
                     current_date = datetime.now().strftime("%d.%m.%Y")
                     old_value = current_row[19] if len(current_row) > 19 and current_row[19] else ""
@@ -288,10 +266,15 @@ def update_google_sheet():
                     sheet.updateRow(row_idx, current_row)
                     
                     updated_count += 1
-                    logging.info(f"✅ Строка {row_idx} ({data['source']}) обновлена")
-                    
+                    logging.info(f"✅ Строка {row_idx} ({result['source']}) обновлена")
+                
+                # Задержка между запросами
+                delay = random.uniform(5, 8)
+                logging.info(f"Пауза {delay:.1f} секунд...")
+                time.sleep(delay)
+                
             except Exception as e:
-                logging.error(f"❌ Ошибка обновления строки {row_idx}: {e}")
+                logging.error(f"Ошибка при парсинге {url}: {e}")
         
         logging.info(f"\nОбновление завершено: {updated_count} из {len(links_to_parse)} обновлено")
         
@@ -300,7 +283,7 @@ def update_google_sheet():
         raise
 
 def main():
-    logging.info("🚀 Парсер OnlyMonster запущен на Railway (2 потока)")
+    logging.info("🚀 Парсер OnlyMonster запущен на Railway (последовательно)")
     logging.info(f"Интервал: {config.UPDATE_INTERVAL // 3600} часа")
     while True:
         try:
