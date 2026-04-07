@@ -21,9 +21,6 @@ sheet_lock = threading.Lock()
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
 def get_driver():
@@ -39,6 +36,7 @@ def get_driver():
     chrome_options.add_argument('--disable-extensions')
     chrome_options.add_argument('--window-size=1920,1080')
     chrome_options.add_argument('--remote-debugging-port=9222')
+    chrome_options.add_argument('--max_old_space_size=512')
     chrome_options.add_argument(f'--user-agent={random.choice(USER_AGENTS)}')
     chrome_options.binary_location = '/usr/bin/chromium'
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
@@ -78,6 +76,7 @@ def parse_single_link(url, max_retries=2):
         try:
             logging.info(f"[{url[-10:]}] Попытка {attempt + 1}/{max_retries}")
             driver = get_driver()
+            driver.set_page_load_timeout(30)
             driver.get(url)
             
             try:
@@ -209,7 +208,7 @@ def parse_single_link(url, max_retries=2):
             logging.error(f"[{url[-10:]}] Ошибка (попытка {attempt + 1}): {e}")
             if attempt == max_retries - 1:
                 return None
-            time.sleep(2)
+            time.sleep(3)
         finally:
             if driver:
                 driver.quit()
@@ -218,7 +217,7 @@ def parse_single_link(url, max_retries=2):
 
 def update_google_sheet():
     logging.info("=" * 50)
-    logging.info("Запуск обновления таблицы (5 потоков)...")
+    logging.info("Запуск обновления таблицы (2 потока)...")
     try:
         ss = ezsheets.Spreadsheet(config.SHEET_ID)
         sheet = ss[0]
@@ -241,15 +240,16 @@ def update_google_sheet():
             logging.info("Нет ссылок для парсинга")
             return
         
-        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Парсинг в 5 потоков...")
+        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Парсинг в 2 потока...")
         
         results = {}
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_row = {
-                executor.submit(parse_single_link, url): (row_idx, url)
-                for row_idx, url in links_to_parse
-            }
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_to_row = {}
+            for row_idx, url in links_to_parse:
+                future = executor.submit(parse_single_link, url)
+                future_to_row[future] = (row_idx, url)
+                time.sleep(1)  # Задержка между запусками
             
             for future in as_completed(future_to_row):
                 row_idx, url = future_to_row[future]
@@ -300,7 +300,7 @@ def update_google_sheet():
         raise
 
 def main():
-    logging.info("🚀 Парсер OnlyMonster запущен на Railway (5 потоков)")
+    logging.info("🚀 Парсер OnlyMonster запущен на Railway (2 потока)")
     logging.info(f"Интервал: {config.UPDATE_INTERVAL // 3600} часа")
     while True:
         try:
