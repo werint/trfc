@@ -29,7 +29,6 @@ def get_driver():
     return webdriver.Chrome(service=service, options=chrome_options)
 
 def click_all_time(driver):
-    """Кликает на All Time в текущей странице"""
     try:
         interval_input = WebDriverWait(driver, 5).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='date'][placeholder='Interval']"))
@@ -47,9 +46,7 @@ def click_all_time(driver):
         return False
 
 def parse_current_page(driver):
-    """Парсит данные с текущей открытой страницы"""
     try:
-        # Ждем загрузки таблицы
         wait = WebDriverWait(driver, 10)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
         
@@ -159,11 +156,34 @@ def format_number(value_str):
     except:
         return value_str
 
+def parse_single_url(driver, url, max_retries=2):
+    """Парсит одну ссылку с повторными попытками"""
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"[{url[-10:]}] Открываю...")
+            driver.get(url)
+            time.sleep(2)
+            
+            click_all_time(driver)
+            
+            data = parse_current_page(driver)
+            if data:
+                return data
+            else:
+                logging.warning(f"[{url[-10:]}] Не удалось спарсить, попытка {attempt + 1}")
+                
+        except Exception as e:
+            logging.error(f"[{url[-10:]}] Ошибка: {e}")
+        
+        if attempt < max_retries - 1:
+            time.sleep(2)
+    
+    return None
+
 def update_google_sheet():
     logging.info("=" * 50)
-    logging.info("Запуск обновления таблицы (один браузер)...")
+    logging.info("Запуск обновления таблицы...")
     
-    driver = None
     try:
         ss = ezsheets.Spreadsheet(config.SHEET_ID)
         sheet = ss[0]
@@ -186,86 +206,130 @@ def update_google_sheet():
             logging.info("Нет ссылок для парсинга")
             return
         
-        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Запускаю один браузер...")
-        
-        # ЗАПУСКАЕМ ОДИН БРАУЗЕР
-        driver = get_driver()
+        logging.info(f"Найдено ссылок: {len(links_to_parse)}")
         
         updated_count = 0
-        for row_idx, url in links_to_parse:
+        failed_urls = []
+        batch_size = 10  # Перезапускаем браузер каждые 10 ссылок
+        
+        for batch_start in range(0, len(links_to_parse), batch_size):
+            batch = links_to_parse[batch_start:batch_start + batch_size]
+            driver = None
+            
             try:
-                logging.info(f"[{url[-10:]}] Открываю страницу...")
-                driver.get(url)
-                time.sleep(2)
-                
-                # Выбираем All Time
-                click_all_time(driver)
-                
-                # Парсим данные
-                data = parse_current_page(driver)
-                
-                if data:
-                    # Форматируем числа
-                    formatted_data = {
-                        'source': data['source'],
-                        'clicks': format_number(data['clicks']),
-                        'fans': format_number(data['fans']),
-                        'spenders': format_number(data['spenders']),
-                        'income': format_number(data['income'])
-                    }
-                    
-                    # Обновляем таблицу
-                    current_row = sheet.getRow(row_idx)
-                    while len(current_row) < 20:
-                        current_row.append('')
-                    
-                    current_row[2] = formatted_data['clicks']
-                    current_row[3] = formatted_data['fans']
-                    current_row[12] = formatted_data['spenders']
-                    current_row[15] = formatted_data['income']
-                    current_row[17] = formatted_data['source']
-                    
-                    current_date = datetime.now().strftime("%d.%m.%Y")
-                    old_value = current_row[19] if len(current_row) > 19 and current_row[19] else ""
-                    
-                    if ' / ' in old_value:
-                        first_date = old_value.split(' / ')[0]
-                        new_value = f"{first_date} / {current_date}"
-                    else:
-                        new_value = f"{current_date} / {current_date}"
-                    
-                    current_row[19] = new_value
-                    sheet.updateRow(row_idx, current_row)
-                    
-                    updated_count += 1
-                    logging.info(f"✅ Строка {row_idx} ({data['source']}) обновлена")
-                else:
-                    logging.error(f"[{url[-10:]}] Не удалось спарсить данные")
-                
-                # Небольшая пауза между ссылками
-                time.sleep(1)
-                
-            except Exception as e:
-                logging.error(f"[{url[-10:]}] Ошибка: {e}")
-                # Если браузер упал, пересоздаем его
-                if driver:
-                    try:
-                        driver.quit()
-                    except:
-                        pass
                 driver = get_driver()
+                logging.info(f"Запущен новый браузер для {len(batch)} ссылок")
+                
+                for row_idx, url in batch:
+                    data = parse_single_url(driver, url)
+                    
+                    if data:
+                        formatted_data = {
+                            'source': data['source'],
+                            'clicks': format_number(data['clicks']),
+                            'fans': format_number(data['fans']),
+                            'spenders': format_number(data['spenders']),
+                            'income': format_number(data['income'])
+                        }
+                        
+                        current_row = sheet.getRow(row_idx)
+                        while len(current_row) < 20:
+                            current_row.append('')
+                        
+                        current_row[2] = formatted_data['clicks']
+                        current_row[3] = formatted_data['fans']
+                        current_row[12] = formatted_data['spenders']
+                        current_row[15] = formatted_data['income']
+                        current_row[17] = formatted_data['source']
+                        
+                        current_date = datetime.now().strftime("%d.%m.%Y")
+                        old_value = current_row[19] if len(current_row) > 19 and current_row[19] else ""
+                        
+                        if ' / ' in old_value:
+                            first_date = old_value.split(' / ')[0]
+                            new_value = f"{first_date} / {current_date}"
+                        else:
+                            new_value = f"{current_date} / {current_date}"
+                        
+                        current_row[19] = new_value
+                        sheet.updateRow(row_idx, current_row)
+                        
+                        updated_count += 1
+                        logging.info(f"✅ Строка {row_idx} ({data['source']}) обновлена")
+                    else:
+                        failed_urls.append((row_idx, url))
+                        logging.error(f"❌ Строка {row_idx} ({url}) не удалась")
+                    
+                    time.sleep(1)  # Небольшая пауза между ссылками
+                    
+            except Exception as e:
+                logging.error(f"Критическая ошибка в батче: {e}")
+            finally:
+                if driver:
+                    driver.quit()
+            
+            # Пауза между батчами
+            if batch_start + batch_size < len(links_to_parse):
+                time.sleep(3)
+        
+        # Повторная попытка для неудавшихся ссылок
+        if failed_urls:
+            logging.info(f"\nПовторная попытка для {len(failed_urls)} неудавшихся ссылок...")
+            driver = None
+            try:
+                driver = get_driver()
+                for row_idx, url in failed_urls:
+                    data = parse_single_url(driver, url, max_retries=3)
+                    if data:
+                        formatted_data = {
+                            'source': data['source'],
+                            'clicks': format_number(data['clicks']),
+                            'fans': format_number(data['fans']),
+                            'spenders': format_number(data['spenders']),
+                            'income': format_number(data['income'])
+                        }
+                        
+                        current_row = sheet.getRow(row_idx)
+                        while len(current_row) < 20:
+                            current_row.append('')
+                        
+                        current_row[2] = formatted_data['clicks']
+                        current_row[3] = formatted_data['fans']
+                        current_row[12] = formatted_data['spenders']
+                        current_row[15] = formatted_data['income']
+                        current_row[17] = formatted_data['source']
+                        
+                        current_date = datetime.now().strftime("%d.%m.%Y")
+                        old_value = current_row[19] if len(current_row) > 19 and current_row[19] else ""
+                        
+                        if ' / ' in old_value:
+                            first_date = old_value.split(' / ')[0]
+                            new_value = f"{first_date} / {current_date}"
+                        else:
+                            new_value = f"{current_date} / {current_date}"
+                        
+                        current_row[19] = new_value
+                        sheet.updateRow(row_idx, current_row)
+                        
+                        updated_count += 1
+                        logging.info(f"✅ (повтор) Строка {row_idx} ({data['source']}) обновлена")
+                        failed_urls.remove((row_idx, url))
+                    
+                    time.sleep(1)
+            finally:
+                if driver:
+                    driver.quit()
         
         logging.info(f"\nОбновление завершено: {updated_count} из {len(links_to_parse)} обновлено")
+        if failed_urls:
+            logging.warning(f"Не удалось обработать: {len(failed_urls)} ссылок")
         
     except Exception as e:
         logging.error(f"Критическая ошибка: {e}")
         raise
-    finally:
-        if driver:
-            driver.quit()
 
 def main():
-    logging.info("🚀 Парсер OnlyMonster запущен (один браузер, быстро)")
+    logging.info("🚀 Парсер OnlyMonster запущен (с перезапуском браузера)")
     logging.info(f"Интервал: {config.UPDATE_INTERVAL // 3600} часа")
     while True:
         try:
