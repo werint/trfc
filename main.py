@@ -28,31 +28,102 @@ def get_driver():
     service = Service('/usr/bin/chromedriver')
     return webdriver.Chrome(service=service, options=chrome_options)
 
-def click_all_time(driver):
+def parse_trial_links_page(driver):
+    """Парсит страницу с Trial Links (нет кнопки Interval)"""
     try:
-        interval_input = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='date'][placeholder='Interval']"))
-        )
-        interval_input.click()
-        time.sleep(0.5)
-        
-        all_time_btn = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[text()='All Time']"))
-        )
-        all_time_btn.click()
-        time.sleep(1)
-        return True
-    except:
-        return False
-
-def parse_current_page(driver):
-    try:
-        wait = WebDriverWait(driver, 10)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-        
+        # Ищем таблицу Trial Links
         all_tables = driver.find_elements(By.TAG_NAME, "table")
         target_table = None
-        table_type = None
+        
+        for tbl in all_tables:
+            rows = tbl.find_elements(By.TAG_NAME, "tr")
+            for row in rows:
+                ths = row.find_elements(By.TAG_NAME, "th")
+                th_texts = [th.text.strip() for th in ths]
+                if 'Trial Link' in th_texts and 'Claims' in th_texts:
+                    target_table = tbl
+                    break
+            if target_table:
+                break
+        
+        if not target_table:
+            logging.error("Таблица Trial Links не найдена")
+            return None
+        
+        rows = target_table.find_elements(By.TAG_NAME, "tr")
+        
+        headers = []
+        for row in rows:
+            ths = row.find_elements(By.TAG_NAME, "th")
+            if ths:
+                headers = [th.text.strip() for th in ths]
+                break
+        
+        data_row = None
+        for row in rows:
+            tds = row.find_elements(By.TAG_NAME, "td")
+            if tds and len(tds) > 1:
+                data_row = row
+                break
+        
+        if not data_row:
+            return None
+        
+        cells = data_row.find_elements(By.TAG_NAME, "td")
+        cell_values = [cell.text.strip() for cell in cells]
+        
+        data_dict = {}
+        for i, header in enumerate(headers):
+            if i < len(cell_values):
+                if header not in data_dict:
+                    data_dict[header] = cell_values[i]
+        
+        source = data_dict.get('Trial Link', 'Unknown')
+        clicks_raw = data_dict.get('Claims', '0')
+        fans_raw = data_dict.get('Fans', '0')
+        spenders_raw = data_dict.get('Spenders', '0')
+        earnings_raw = data_dict.get('Earnings', '0')
+        
+        if '\n' in source:
+            source = source.split('\n')[0].strip()
+        
+        if ' / ' in clicks_raw:
+            clicks_raw = clicks_raw.split(' / ')[0].strip()
+        
+        return {
+            'source': source,
+            'clicks': clicks_raw,
+            'fans': fans_raw,
+            'spenders': spenders_raw,
+            'income': earnings_raw
+        }
+        
+    except Exception as e:
+        logging.error(f"Ошибка парсинга Trial Links: {e}")
+        return None
+
+def parse_tracking_links_page(driver):
+    """Парсит страницу с Tracking Links (с кнопкой Interval)"""
+    try:
+        # Нажимаем Interval и All Time
+        try:
+            interval_input = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='date'][placeholder='Interval']"))
+            )
+            interval_input.click()
+            time.sleep(0.5)
+            
+            all_time_btn = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[text()='All Time']"))
+            )
+            all_time_btn.click()
+            time.sleep(1)
+        except:
+            pass
+        
+        # Ищем таблицу Tracking Links
+        all_tables = driver.find_elements(By.TAG_NAME, "table")
+        target_table = None
         
         for tbl in all_tables:
             rows = tbl.find_elements(By.TAG_NAME, "tr")
@@ -61,11 +132,6 @@ def parse_current_page(driver):
                 th_texts = [th.text.strip() for th in ths]
                 if 'Track Link' in th_texts and 'Clicks' in th_texts:
                     target_table = tbl
-                    table_type = 'track'
-                    break
-                elif 'Trial Link' in th_texts and 'Claims' in th_texts:
-                    target_table = tbl
-                    table_type = 'trial'
                     break
             if target_table:
                 break
@@ -101,24 +167,14 @@ def parse_current_page(driver):
                 if header not in data_dict:
                     data_dict[header] = cell_values[i]
         
-        if table_type == 'track':
-            source = data_dict.get('Track Link', 'Unknown')
-            clicks_raw = data_dict.get('Clicks', '0')
-            fans_raw = data_dict.get('Fans', '0')
-            spenders_raw = data_dict.get('Spenders', '0')
-            earnings_raw = data_dict.get('Earnings', '0')
-        else:
-            source = data_dict.get('Trial Link', 'Unknown')
-            clicks_raw = data_dict.get('Claims', '0')
-            fans_raw = data_dict.get('Fans', '0')
-            spenders_raw = data_dict.get('Spenders', '0')
-            earnings_raw = data_dict.get('Earnings', '0')
+        source = data_dict.get('Track Link', 'Unknown')
+        clicks_raw = data_dict.get('Clicks', '0')
+        fans_raw = data_dict.get('Fans', '0')
+        spenders_raw = data_dict.get('Spenders', '0')
+        earnings_raw = data_dict.get('Earnings', '0')
         
         if '\n' in source:
             source = source.split('\n')[0].strip()
-        
-        if ' / ' in clicks_raw:
-            clicks_raw = clicks_raw.split(' / ')[0].strip()
         
         return {
             'source': source,
@@ -129,8 +185,38 @@ def parse_current_page(driver):
         }
         
     except Exception as e:
-        logging.error(f"Ошибка парсинга: {e}")
+        logging.error(f"Ошибка парсинга Tracking Links: {e}")
         return None
+
+def parse_single_url(driver, url, max_retries=2):
+    for attempt in range(max_retries):
+        try:
+            logging.info(f"[{url[-10:]}] Открываю...")
+            driver.get(url)
+            time.sleep(3)
+            
+            # Определяем тип страницы по наличию элементов
+            page_text = driver.find_element(By.TAG_NAME, "body").text
+            
+            if 'Trial Links' in page_text or 'Trial Link' in page_text:
+                logging.info(f"[{url[-10:]}] Тип: Trial Links")
+                data = parse_trial_links_page(driver)
+            else:
+                logging.info(f"[{url[-10:]}] Тип: Tracking Links")
+                data = parse_tracking_links_page(driver)
+            
+            if data:
+                return data
+            else:
+                logging.warning(f"[{url[-10:]}] Не удалось спарсить, попытка {attempt + 1}")
+                
+        except Exception as e:
+            logging.error(f"[{url[-10:]}] Ошибка: {e}")
+        
+        if attempt < max_retries - 1:
+            time.sleep(2)
+    
+    return None
 
 def format_number(value_str):
     if not value_str or value_str == '0':
@@ -155,30 +241,6 @@ def format_number(value_str):
         return f"{integer_part},{decimal_part}"
     except:
         return value_str
-
-def parse_single_url(driver, url, max_retries=2):
-    """Парсит одну ссылку с повторными попытками"""
-    for attempt in range(max_retries):
-        try:
-            logging.info(f"[{url[-10:]}] Открываю...")
-            driver.get(url)
-            time.sleep(2)
-            
-            click_all_time(driver)
-            
-            data = parse_current_page(driver)
-            if data:
-                return data
-            else:
-                logging.warning(f"[{url[-10:]}] Не удалось спарсить, попытка {attempt + 1}")
-                
-        except Exception as e:
-            logging.error(f"[{url[-10:]}] Ошибка: {e}")
-        
-        if attempt < max_retries - 1:
-            time.sleep(2)
-    
-    return None
 
 def update_google_sheet():
     logging.info("=" * 50)
@@ -210,7 +272,7 @@ def update_google_sheet():
         
         updated_count = 0
         failed_urls = []
-        batch_size = 10  # Перезапускаем браузер каждые 10 ссылок
+        batch_size = 5  # Уменьшил до 5 для стабильности
         
         for batch_start in range(0, len(links_to_parse), batch_size):
             batch = links_to_parse[batch_start:batch_start + batch_size]
@@ -218,10 +280,11 @@ def update_google_sheet():
             
             try:
                 driver = get_driver()
+                driver.set_page_load_timeout(30)
                 logging.info(f"Запущен новый браузер для {len(batch)} ссылок")
                 
                 for row_idx, url in batch:
-                    data = parse_single_url(driver, url)
+                    data = parse_single_url(driver, url, max_retries=2)
                     
                     if data:
                         formatted_data = {
@@ -260,7 +323,7 @@ def update_google_sheet():
                         failed_urls.append((row_idx, url))
                         logging.error(f"❌ Строка {row_idx} ({url}) не удалась")
                     
-                    time.sleep(1)  # Небольшая пауза между ссылками
+                    time.sleep(1.5)
                     
             except Exception as e:
                 logging.error(f"Критическая ошибка в батче: {e}")
@@ -315,7 +378,7 @@ def update_google_sheet():
                         logging.info(f"✅ (повтор) Строка {row_idx} ({data['source']}) обновлена")
                         failed_urls.remove((row_idx, url))
                     
-                    time.sleep(1)
+                    time.sleep(1.5)
             finally:
                 if driver:
                     driver.quit()
@@ -323,13 +386,15 @@ def update_google_sheet():
         logging.info(f"\nОбновление завершено: {updated_count} из {len(links_to_parse)} обновлено")
         if failed_urls:
             logging.warning(f"Не удалось обработать: {len(failed_urls)} ссылок")
+            for row_idx, url in failed_urls:
+                logging.warning(f"  - {url}")
         
     except Exception as e:
         logging.error(f"Критическая ошибка: {e}")
         raise
 
 def main():
-    logging.info("🚀 Парсер OnlyMonster запущен (с перезапуском браузера)")
+    logging.info("🚀 Парсер OnlyMonster запущен (финальная версия)")
     logging.info(f"Интервал: {config.UPDATE_INTERVAL // 3600} часа")
     while True:
         try:
