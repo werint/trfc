@@ -11,8 +11,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from datetime import datetime
 import config
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Лок для потокобезопасного обновления Google Sheets
+sheet_lock = threading.Lock()
 
 # Список User-Agent для ротации
 USER_AGENTS = [
@@ -96,13 +101,13 @@ def parse_single_link(url):
             )
             cookie_button.click()
             logging.info(f"[{url[-10:]}] Куки приняты")
-            time.sleep(1)
+            time.sleep(0.5)
         except:
             pass
         
         wait = WebDriverWait(driver, 15)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(3)
+        time.sleep(1.5)
         
         # Клик на Interval
         try:
@@ -110,7 +115,7 @@ def parse_single_link(url):
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='date'][placeholder='Interval']"))
             )
             interval_input.click()
-            time.sleep(1)
+            time.sleep(0.5)
         except:
             pass
         
@@ -129,7 +134,7 @@ def parse_single_link(url):
             except:
                 pass
         
-        time.sleep(2)
+        time.sleep(1)
         
         # Поиск таблицы
         all_tables = driver.find_elements(By.TAG_NAME, "table")
@@ -223,9 +228,9 @@ def parse_single_link(url):
             driver.quit()
 
 def update_google_sheet():
-    """Обновляет Google таблицу"""
+    """Обновляет Google таблицу с многопоточностью (5 потоков)"""
     logging.info("=" * 50)
-    logging.info("Запуск обновления таблицы...")
+    logging.info("Запуск обновления таблицы (5 потоков)...")
     try:
         ss = ezsheets.Spreadsheet(config.SHEET_ID)
         sheet = ss[0]
@@ -248,23 +253,40 @@ def update_google_sheet():
             logging.info("Нет ссылок для парсинга")
             return
         
-        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Начинаем парсинг...")
+        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Парсинг в 5 потоков...")
         
+        results = {}
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_row = {
+                executor.submit(parse_single_link, url): (row_idx, url)
+                for row_idx, url in links_to_parse
+            }
+            
+            for future in as_completed(future_to_row):
+                row_idx, url = future_to_row[future]
+                try:
+                    result = future.result(timeout=90)
+                    if result:
+                        results[row_idx] = result
+                except Exception as e:
+                    logging.error(f"Ошибка при парсинге {url}: {e}")
+        
+        # Обновляем таблицу (последовательно, чтобы избежать конфликтов)
         updated_count = 0
-        for row_idx, url in links_to_parse:
+        for row_idx, data in results.items():
             try:
-                result = parse_single_link(url)
-                if result:
+                with sheet_lock:
                     current_row = sheet.getRow(row_idx)
                     
                     while len(current_row) < 20:
                         current_row.append('')
                     
-                    current_row[2] = result['clicks']      # C
-                    current_row[3] = result['fans']        # D
-                    current_row[12] = result['spenders']   # M
-                    current_row[15] = result['income']     # P
-                    current_row[17] = result['source']     # R
+                    current_row[2] = data['clicks']
+                    current_row[3] = data['fans']
+                    current_row[12] = data['spenders']
+                    current_row[15] = data['income']
+                    current_row[17] = data['source']
                     
                     current_date = datetime.now().strftime("%d.%m.%Y")
                     old_value = current_row[19] if len(current_row) > 19 and current_row[19] else ""
@@ -279,15 +301,10 @@ def update_google_sheet():
                     sheet.updateRow(row_idx, current_row)
                     
                     updated_count += 1
-                    logging.info(f"✅ Строка {row_idx} ({result['source']}) обновлена")
-                    
-                    # Задержка между запросами
-                    delay = random.uniform(5, 10)
-                    logging.info(f"Пауза {delay:.1f} секунд...")
-                    time.sleep(delay)
+                    logging.info(f"✅ Строка {row_idx} ({data['source']}) обновлена")
                     
             except Exception as e:
-                logging.error(f"Ошибка при парсинге {url}: {e}")
+                logging.error(f"❌ Ошибка обновления строки {row_idx}: {e}")
         
         logging.info(f"\nОбновление завершено: {updated_count} из {len(links_to_parse)} обновлено")
         
@@ -296,7 +313,7 @@ def update_google_sheet():
         raise
 
 def main():
-    logging.info("🚀 Парсер OnlyMonster запущен на Railway")
+    logging.info("🚀 Парсер OnlyMonster запущен на Railway (5 потоков)")
     logging.info(f"Интервал: {config.UPDATE_INTERVAL // 3600} часа")
     while True:
         try:
