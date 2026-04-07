@@ -28,25 +28,43 @@ USER_AGENTS = [
 ]
 
 def get_driver():
-    """Создает и возвращает настроенный драйвер"""
+    """Создает и возвращает настроенный драйвер для Railway"""
     chrome_options = Options()
     
-    # Базовые настройки для маскировки
-    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    # Критические настройки для Railway
+    chrome_options.add_argument('--headless=new')
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--disable-software-rasterizer')
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     chrome_options.add_argument('--disable-web-security')
     chrome_options.add_argument('--disable-features=VizDisplayCompositor')
     chrome_options.add_argument('--disable-extensions')
+    chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('--remote-debugging-port=9222')
     
     # Случайный User-Agent
     chrome_options.add_argument(f'--user-agent={random.choice(USER_AGENTS)}')
     
-    # Автоматическая установка ChromeDriver
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    # Путь к Chrome на Railway
+    chrome_options.binary_location = '/usr/bin/chromium'
     
+    # Отключаем логирование WebDriver
+    chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    
+    # Настройки для стабильности
+    chrome_options.add_argument('--disable-setuid-sandbox')
+    chrome_options.add_argument('--disable-logging')
+    chrome_options.add_argument('--log-level=3')
+    chrome_options.add_argument('--silent')
+    
+    service = Service(
+        '/usr/bin/chromedriver',
+        service_args=['--verbose', '--log-path=/tmp/chromedriver.log']
+    )
+    
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
 def format_number(value_str):
