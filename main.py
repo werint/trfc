@@ -2,21 +2,17 @@ import ezsheets
 import time
 import logging
 import random
+import os
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
 import config
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-sheet_lock = threading.Lock()
 
 # Список User-Agent для ротации
 USER_AGENTS = [
@@ -31,7 +27,7 @@ def get_driver():
     """Создает и возвращает настроенный драйвер для Railway"""
     chrome_options = Options()
     
-    # Критические настройки для Railway
+    # Критические настройки для headless режима на Railway
     chrome_options.add_argument('--headless=new')
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
@@ -50,25 +46,17 @@ def get_driver():
     # Путь к Chrome на Railway
     chrome_options.binary_location = '/usr/bin/chromium'
     
-    # Отключаем логирование WebDriver
+    # Отключаем лишние логи
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
-    
-    # Настройки для стабильности
-    chrome_options.add_argument('--disable-setuid-sandbox')
-    chrome_options.add_argument('--disable-logging')
     chrome_options.add_argument('--log-level=3')
     chrome_options.add_argument('--silent')
     
-    service = Service(
-        '/usr/bin/chromedriver',
-        service_args=['--verbose', '--log-path=/tmp/chromedriver.log']
-    )
-    
+    service = Service('/usr/bin/chromedriver')
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
 def format_number(value_str):
-    """Форматирует число"""
+    """Форматирует число: убирает $, точку заменяет на запятую, добавляет пробелы как разделитель тысяч"""
     if not value_str or value_str == '0':
         return '0'
     try:
@@ -235,9 +223,9 @@ def parse_single_link(url):
             driver.quit()
 
 def update_google_sheet():
-    """Обновляет Google таблицу с 5 потоками и увеличенными задержками"""
+    """Обновляет Google таблицу"""
     logging.info("=" * 50)
-    logging.info("Запуск обновления таблицы (5 потоков)...")
+    logging.info("Запуск обновления таблицы...")
     try:
         ss = ezsheets.Spreadsheet(config.SHEET_ID)
         sheet = ss[0]
@@ -260,47 +248,23 @@ def update_google_sheet():
             logging.info("Нет ссылок для парсинга")
             return
         
-        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Начинаем параллельный парсинг (5 потоков)...")
+        logging.info(f"Найдено ссылок: {len(links_to_parse)}. Начинаем парсинг...")
         
-        results = {}
-        
-        # Функция-обертка для добавления задержки между запусками потоков
-        def process_with_delay(url):
-            # Случайная задержка перед началом парсинга (имитация человека)
-            delay = random.uniform(2, 5)
-            time.sleep(delay)
-            return parse_single_link(url)
-        
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_row = {}
-            for row_idx, url in links_to_parse:
-                future = executor.submit(process_with_delay, url)
-                future_to_row[future] = (row_idx, url)
-            
-            for future in as_completed(future_to_row):
-                row_idx, url = future_to_row[future]
-                try:
-                    result = future.result(timeout=120)
-                    if result:
-                        results[row_idx] = result
-                except Exception as e:
-                    logging.error(f"Ошибка при парсинге {url}: {e}")
-        
-        # Обновляем таблицу
         updated_count = 0
-        for row_idx, data in results.items():
+        for row_idx, url in links_to_parse:
             try:
-                with sheet_lock:
+                result = parse_single_link(url)
+                if result:
                     current_row = sheet.getRow(row_idx)
                     
                     while len(current_row) < 20:
                         current_row.append('')
                     
-                    current_row[2] = data['clicks']
-                    current_row[3] = data['fans']
-                    current_row[12] = data['spenders']
-                    current_row[15] = data['income']
-                    current_row[17] = data['source']
+                    current_row[2] = result['clicks']      # C
+                    current_row[3] = result['fans']        # D
+                    current_row[12] = result['spenders']   # M
+                    current_row[15] = result['income']     # P
+                    current_row[17] = result['source']     # R
                     
                     current_date = datetime.now().strftime("%d.%m.%Y")
                     old_value = current_row[19] if len(current_row) > 19 and current_row[19] else ""
@@ -315,10 +279,15 @@ def update_google_sheet():
                     sheet.updateRow(row_idx, current_row)
                     
                     updated_count += 1
-                    logging.info(f"✅ Строка {row_idx} ({data['source']}) обновлена")
+                    logging.info(f"✅ Строка {row_idx} ({result['source']}) обновлена")
+                    
+                    # Задержка между запросами
+                    delay = random.uniform(5, 10)
+                    logging.info(f"Пауза {delay:.1f} секунд...")
+                    time.sleep(delay)
                     
             except Exception as e:
-                logging.error(f"❌ Ошибка обновления строки {row_idx}: {e}")
+                logging.error(f"Ошибка при парсинге {url}: {e}")
         
         logging.info(f"\nОбновление завершено: {updated_count} из {len(links_to_parse)} обновлено")
         
@@ -327,7 +296,7 @@ def update_google_sheet():
         raise
 
 def main():
-    logging.info("🚀 Парсер OnlyMonster запущен (5 потоков, увеличенные задержки)")
+    logging.info("🚀 Парсер OnlyMonster запущен на Railway")
     logging.info(f"Интервал: {config.UPDATE_INTERVAL // 3600} часа")
     while True:
         try:
