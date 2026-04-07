@@ -16,10 +16,8 @@ import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Лок для потокобезопасного обновления Google Sheets
 sheet_lock = threading.Lock()
 
-# Список User-Agent для ротации
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -29,10 +27,7 @@ USER_AGENTS = [
 ]
 
 def get_driver():
-    """Создает и возвращает настроенный драйвер для Railway"""
     chrome_options = Options()
-    
-    # Критические настройки для headless режима на Railway
     chrome_options.add_argument('--headless=new')
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
@@ -44,24 +39,16 @@ def get_driver():
     chrome_options.add_argument('--disable-extensions')
     chrome_options.add_argument('--window-size=1920,1080')
     chrome_options.add_argument('--remote-debugging-port=9222')
-    
-    # Случайный User-Agent
     chrome_options.add_argument(f'--user-agent={random.choice(USER_AGENTS)}')
-    
-    # Путь к Chrome на Railway
     chrome_options.binary_location = '/usr/bin/chromium'
-    
-    # Отключаем лишние логи
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
     chrome_options.add_argument('--log-level=3')
     chrome_options.add_argument('--silent')
     
     service = Service('/usr/bin/chromedriver')
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
+    return webdriver.Chrome(service=service, options=chrome_options)
 
 def format_number(value_str):
-    """Форматирует число: убирает $, точку заменяет на запятую, добавляет пробелы как разделитель тысяч"""
     if not value_str or value_str == '0':
         return '0'
     try:
@@ -85,150 +72,151 @@ def format_number(value_str):
     except:
         return value_str
 
-def parse_single_link(url):
-    """Парсит одну ссылку"""
-    driver = None
-    try:
-        logging.info(f"[{url[-10:]}] Открываю страницу...")
-        driver = get_driver()
-        
-        driver.get(url)
-        
-        # Принимаем куки
+def parse_single_link(url, max_retries=2):
+    for attempt in range(max_retries):
+        driver = None
         try:
-            cookie_button = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.ID, "CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll"))
-            )
-            cookie_button.click()
-            logging.info(f"[{url[-10:]}] Куки приняты")
-            time.sleep(0.5)
-        except:
-            pass
-        
-        wait = WebDriverWait(driver, 15)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(1.5)
-        
-        # Клик на Interval
-        try:
-            interval_input = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='date'][placeholder='Interval']"))
-            )
-            interval_input.click()
-            time.sleep(0.5)
-        except:
-            pass
-        
-        # Выбор All Time
-        try:
-            all_time_btn = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[text()='All Time']"))
-            )
-            all_time_btn.click()
-        except:
+            logging.info(f"[{url[-10:]}] Попытка {attempt + 1}/{max_retries}")
+            driver = get_driver()
+            driver.get(url)
+            
+            try:
+                cookie_button = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.ID, "CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll"))
+                )
+                cookie_button.click()
+                time.sleep(0.5)
+            except:
+                pass
+            
+            wait = WebDriverWait(driver, 15)
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            time.sleep(1.5)
+            
+            try:
+                interval_input = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "input[name='date'][placeholder='Interval']"))
+                )
+                interval_input.click()
+                time.sleep(0.5)
+            except:
+                pass
+            
             try:
                 all_time_btn = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-index='10']"))
+                    EC.element_to_be_clickable((By.XPATH, "//button[text()='All Time']"))
                 )
                 all_time_btn.click()
             except:
-                pass
-        
-        time.sleep(1)
-        
-        # Поиск таблицы
-        all_tables = driver.find_elements(By.TAG_NAME, "table")
-        target_table = None
-        table_type = None
-        
-        for tbl in all_tables:
-            rows = tbl.find_elements(By.TAG_NAME, "tr")
+                try:
+                    all_time_btn = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-index='10']"))
+                    )
+                    all_time_btn.click()
+                except:
+                    pass
+            
+            time.sleep(1)
+            
+            all_tables = driver.find_elements(By.TAG_NAME, "table")
+            target_table = None
+            table_type = None
+            
+            for tbl in all_tables:
+                rows = tbl.find_elements(By.TAG_NAME, "tr")
+                for row in rows:
+                    ths = row.find_elements(By.TAG_NAME, "th")
+                    th_texts = [th.text.strip() for th in ths]
+                    if 'Track Link' in th_texts and 'Clicks' in th_texts:
+                        target_table = tbl
+                        table_type = 'track'
+                        break
+                    elif 'Trial Link' in th_texts and 'Claims' in th_texts:
+                        target_table = tbl
+                        table_type = 'trial'
+                        break
+                if target_table:
+                    break
+            
+            if not target_table:
+                logging.error(f"[{url[-10:]}] Таблица не найдена")
+                if attempt == max_retries - 1:
+                    return None
+                continue
+            
+            rows = target_table.find_elements(By.TAG_NAME, "tr")
+            
+            headers = []
             for row in rows:
                 ths = row.find_elements(By.TAG_NAME, "th")
-                th_texts = [th.text.strip() for th in ths]
-                if 'Track Link' in th_texts and 'Clicks' in th_texts:
-                    target_table = tbl
-                    table_type = 'track'
+                if ths:
+                    headers = [th.text.strip() for th in ths]
                     break
-                elif 'Trial Link' in th_texts and 'Claims' in th_texts:
-                    target_table = tbl
-                    table_type = 'trial'
+            
+            data_row = None
+            for row in rows:
+                tds = row.find_elements(By.TAG_NAME, "td")
+                if tds and len(tds) > 1:
+                    data_row = row
                     break
-            if target_table:
-                break
-        
-        if not target_table:
-            logging.error(f"[{url[-10:]}] Таблица не найдена")
-            return None
-        
-        rows = target_table.find_elements(By.TAG_NAME, "tr")
-        
-        headers = []
-        for row in rows:
-            ths = row.find_elements(By.TAG_NAME, "th")
-            if ths:
-                headers = [th.text.strip() for th in ths]
-                break
-        
-        data_row = None
-        for row in rows:
-            tds = row.find_elements(By.TAG_NAME, "td")
-            if tds and len(tds) > 1:
-                data_row = row
-                break
-        
-        if not data_row:
-            logging.error(f"[{url[-10:]}] Нет данных")
-            return None
-        
-        cells = data_row.find_elements(By.TAG_NAME, "td")
-        cell_values = [cell.text.strip() for cell in cells]
-        
-        data_dict = {}
-        for i, header in enumerate(headers):
-            if i < len(cell_values):
-                if header not in data_dict:
-                    data_dict[header] = cell_values[i]
-        
-        if table_type == 'track':
-            source = data_dict.get('Track Link', 'Unknown')
-            clicks_raw = data_dict.get('Clicks', '0')
-            fans_raw = data_dict.get('Fans', '0')
-            spenders_raw = data_dict.get('Spenders', '0')
-            earnings_raw = data_dict.get('Earnings', '0')
-        else:
-            source = data_dict.get('Trial Link', 'Unknown')
-            clicks_raw = data_dict.get('Claims', '0')
-            fans_raw = data_dict.get('Fans', '0')
-            spenders_raw = data_dict.get('Spenders', '0')
-            earnings_raw = data_dict.get('Earnings', '0')
-        
-        if '\n' in source:
-            source = source.split('\n')[0].strip()
-        
-        if ' / ' in clicks_raw:
-            clicks_raw = clicks_raw.split(' / ')[0].strip()
-        
-        result = {
-            'source': source,
-            'clicks': format_number(clicks_raw),
-            'fans': format_number(fans_raw),
-            'spenders': format_number(spenders_raw),
-            'income': format_number(earnings_raw),
-            'url': url
-        }
-        logging.info(f"[{url[-10:]}] ✅ Спарсено: {result['source']}")
-        return result
-        
-    except Exception as e:
-        logging.error(f"[{url[-10:]}] Ошибка: {e}")
-        return None
-    finally:
-        if driver:
-            driver.quit()
+            
+            if not data_row:
+                logging.error(f"[{url[-10:]}] Нет данных")
+                if attempt == max_retries - 1:
+                    return None
+                continue
+            
+            cells = data_row.find_elements(By.TAG_NAME, "td")
+            cell_values = [cell.text.strip() for cell in cells]
+            
+            data_dict = {}
+            for i, header in enumerate(headers):
+                if i < len(cell_values):
+                    if header not in data_dict:
+                        data_dict[header] = cell_values[i]
+            
+            if table_type == 'track':
+                source = data_dict.get('Track Link', 'Unknown')
+                clicks_raw = data_dict.get('Clicks', '0')
+                fans_raw = data_dict.get('Fans', '0')
+                spenders_raw = data_dict.get('Spenders', '0')
+                earnings_raw = data_dict.get('Earnings', '0')
+            else:
+                source = data_dict.get('Trial Link', 'Unknown')
+                clicks_raw = data_dict.get('Claims', '0')
+                fans_raw = data_dict.get('Fans', '0')
+                spenders_raw = data_dict.get('Spenders', '0')
+                earnings_raw = data_dict.get('Earnings', '0')
+            
+            if '\n' in source:
+                source = source.split('\n')[0].strip()
+            
+            if ' / ' in clicks_raw:
+                clicks_raw = clicks_raw.split(' / ')[0].strip()
+            
+            result = {
+                'source': source,
+                'clicks': format_number(clicks_raw),
+                'fans': format_number(fans_raw),
+                'spenders': format_number(spenders_raw),
+                'income': format_number(earnings_raw),
+                'url': url
+            }
+            logging.info(f"[{url[-10:]}] ✅ Спарсено: {result['source']}")
+            return result
+            
+        except Exception as e:
+            logging.error(f"[{url[-10:]}] Ошибка (попытка {attempt + 1}): {e}")
+            if attempt == max_retries - 1:
+                return None
+            time.sleep(2)
+        finally:
+            if driver:
+                driver.quit()
+    
+    return None
 
 def update_google_sheet():
-    """Обновляет Google таблицу с многопоточностью (5 потоков)"""
     logging.info("=" * 50)
     logging.info("Запуск обновления таблицы (5 потоков)...")
     try:
@@ -272,7 +260,6 @@ def update_google_sheet():
                 except Exception as e:
                     logging.error(f"Ошибка при парсинге {url}: {e}")
         
-        # Обновляем таблицу (последовательно, чтобы избежать конфликтов)
         updated_count = 0
         for row_idx, data in results.items():
             try:
